@@ -1,9 +1,9 @@
 #region Global Settings
 $future = $true # Search for future airings ?
-$NumberOfDaysBack = 10000 # Number of days to search back in Mediathekviewweb
+$NumberOfDaysBack = 14 # Number of days to search back in Mediathekviewweb
 $MinimumSize = 100000 # Minimum Size of the MP4 file, trying to remove stupid sizes
 $MinimumLength = "00:15:00" # Minimum length of the Airing in HH:MM:SS
-$MaxReturnEntries = 1000 #Maximum entries, that will be returned by Mediathekwebview
+$MaxReturnEntries = 40 #Maximum entries, that will be returned by Mediathekwebview
 #Synology Username and Password. Dont use a user with 2FA. Its pretty wise to add a user with very limited rights (download etc.)
 $SynologyUserName = "Username"
 $SynologyPassword = "Password"
@@ -46,8 +46,8 @@ $CharacterReplaceTable.'ß' = 'ss'
 
 $ExcludeTitlesKeywords = @(
     "Audiodeskription"
-    "Gebärdensprache"
-    "Hörfassung"    
+    "Geb$([string][char]228)rdensprache"
+    "H$([string][char]246)rfassung"    
 )
 
 #endregion Global Settings
@@ -135,7 +135,7 @@ foreach ($MediathekEntry in $MediathekDownload) {
         $DownloadInfos.DownloadStatus = "None"
         $DownloadInfos.DownloadFileName = ""
         $DownloadInfos.NewFileName = ""
-        $AntwortConverted = $Antwort.result.results | Select-Object Channel, topic, title, @{Label = "timestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.timestamp).ToLocalTime() } }, @{Label = "duration"; Expression = { [timespan]::FromSeconds($_.duration) } }, @{Label = "filmlisteTimestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.filmlisteTimestamp).ToLocalTime() } }, description, size, url_website, url_video, @{Label = "DownloadInfos"; Expression = { $DownloadInfos } }
+        $AntwortConverted = $Antwort.result.results | Select-Object Channel, topic, title, @{Label = "timestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.timestamp).ToLocalTime() } }, @{Label = "duration"; Expression = { [timespan]::FromSeconds($_.duration) } }, @{Label = "filmlisteTimestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.filmlisteTimestamp).ToLocalTime() } }, description, size, url_website, url_video, @{Label = "DownloadInfos"; Expression = { $DownloadInfos.Clone() } }
         Write-Host "Mediathekquery returned: totalResults : $($Antwort.result.queryInfo.totalResults) Returned Results : $($Antwort.result.queryInfo.resultCount) Filmliste Timestamp:" (Get-Date "01/01/1970").ToLocalTime().AddSeconds($Antwort.result.queryInfo.filmlisteTimestamp)
         if (!$AntwortConverted) {
             continue
@@ -272,7 +272,7 @@ if ($Auswahl) {
         }
         else {
             #File does not exist, so download
-            Write-Host "Downloading $($Job.topic) - $($Job.title) from $($Job.timestamp)"
+            Write-Host "Downloading $($Job.topic) - $($Job.title) from $($Job.timestamp) to $($Job.DownloadInfos.Destination) Size: $($Job.size / 1MB) MB"
             $CreateTaskArguments = @{
                 api         = "SYNO.DownloadStation.Task"
                 version     = "3"
