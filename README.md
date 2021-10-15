@@ -27,6 +27,20 @@ https://www.lambrecht.de/?p=155
 This script should be compatible with PS5.1 and PS7.x although it is usually tested on PS5.1.
 
 Version History:
-1.0
-- First Version
+
+Version 1.1
+- Password will now be saved to XML File in the Script Directory. On Windows it is encrypted with DPAPI, on Linux it is not really encrypted.
+- Password: If you leave Password blank you will be asked on every run of the script (If you want to change this behaviour, delete the xml file, to start from scratch)
+- If more then x finished Downloadjobs are in the Download Manager you will be asked if you want to delete it (for x see parameter $MaxFinishedBeforeDeleteQuestion)
+- Fur multiple downloads after each other, the List of airings can be cached. The minutes it will be cached can be configured with $SkipQueryMinutes. If you want to requery, reset variable $LastMediathekSearch=$Null or restart the PS Console
+- To make the script compatible with linux PWSH, it will try to use Out-ConsoleGridView for the choosing of airings to download. If neither Out-GridView or Out-ConsoleGridView are present the script will break. Get Out-ConsoleGridView with the module "Microsoft.PowerShell.ConsoleGuiTools" from the PSGallery
+- To make the Gridview more readable, i changed to download IDs and so the Columns can be defined with:
+  $DisplayInformationsDesktop for the desktop Out-GridView
+  $DisplayInformationsConsole for the Console Out-ConsoleGridView
+Known Issue:
+- If you delete all download tasks when asked and a downloadjob is a redownload, the script will additionally try to delete the single download task from the finished list, altough the list is empty. This is not a real problem and cosmetic.
+
+
+Version 1.0
+First Github start, elementary functionality.
 
