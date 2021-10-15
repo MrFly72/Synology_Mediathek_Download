@@ -27,7 +27,8 @@ https://www.lambrecht.de/?p=155
 This script should be compatible with PS5.1 and PS7.x although it is usually tested on PS5.1.
 
 Version History:
-
+Version 1.2
+- Added functionality to ask the user if the last query was below $ForceQueryRerunMinutes if a query should be rerun anyhow
 Version 1.1
 - Password will now be saved to XML File in the Script Directory. On Windows it is encrypted with DPAPI, on Linux it is not really encrypted.
 - Password: If you leave Password blank you will be asked on every run of the script (If you want to change this behaviour, delete the xml file, to start from scratch)

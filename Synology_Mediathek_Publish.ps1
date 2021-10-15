@@ -1,88 +1,18 @@
 #region Global Settings
-#Remove-Variable LastMediathekSearch
 $future = $true # Search for future airings ?
-#$PSDefaultParameterValues.Remove("Invoke-RestMethod:Proxy")
-#$PSDefaultParameterValues.Clear()
 $NumberOfDaysBack = 1000 # Number of days to search back in Mediathekviewweb
 $MinimumSize = 100000 # Minimum Size of the MP4 file, trying to remove stupid sizes
 $MinimumLength = "00:15:00" # Minimum length of the Airing in HH:MM:SS
 $MaxReturnEntries = 100 #Maximum entries, that will be returned by Mediathekwebview
-$SkipQueryMinutes = 60 # Check fo LastRunTime and if it is less then this Minutes, dont ask the Mediathek again. Only Works if PS Session stays active. to reset, reload session
+$ForceQueryRerunMinutes = 60 # Check fo LastRunTime and if it is less then this Minutes, dont ask the Mediathek again. Only Works if PS Session stays active.
 $MaxFinishedBeforeDeleteQuestion = 5
-#Synology Username and Password. Dont use a user with 2FA. Its pretty wise to add a user with very limited rights (download etc.)
-#Please be aware that the "encryption" used on linux is NOT Secure. On Windows it uses DPAPI, on Linux its just a Bitewrapper
-$ScriptFileName=$MyInvocation.MyCommand.Name
-$ScriptFileNamePlain=[System.IO.Path]::GetFileNameWithoutExtension($ScriptFileName)
-if (Test-Path "$PSScriptRoot\$ScriptFileNamePlain.xml") {
-    $Credentials=import-clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
-    if ($Credentials.GetNetworkCredential().Password -eq "" -or $Credentials.GetNetworkCredential().Password -eq "please_ask_for_password") {
-        $Credentials = Get-Credential -UserName $Credentials.UserName -Message "Password is empty, so it will be asked on every use!"
-    }
-}
-else {
-    $title = "Save the password?"
-    $msg = "Do you want save the password to a file (No=Ask every start for the password) ?"
-    $options = '&Yes', '&No'
-    $default = 0  # 0=Yes, 1=No
-    $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
-    $Credentials = Get-Credential
-    #Interim solution as Linux PWSH cannot reimport clixml with an empty password. We will fill it with this password, so we know that it is intended to not save the password!
-    if ($response -eq 1) {
-        $TmpPassword =  ConvertTo-SecureString -AsPlainText -Force "please_ask_for_password"
-        $SaveCredentials = new-object -typename System.Management.Automation.PSCredential -argumentlist ($Credentials.UserName, $TmpPassword)
-    }
-    else {
-        $SaveCredentials = $Credentials
-    }
-    $SaveCredentials | Export-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
-}
-
-$SynologyUserName = $Credentials.Username
-$SynologyPassword = $Credentials.GetNetworkCredential().Password
 # Replace with your URI, can be internal or external URI.
 # Standard Ports: 5000 : HTTP, 5001 : HTTPS (strongly recommended!!!)
 # If you are using SSL make sure the SSL Cert matches!
-$SynologyURI="https://mysynology.home.net:5001" 
+$SynologyURI = "https://mysynology.home.net:5001" 
 
-#region Out-ConsoleGridview Init
-#Use Out-ConsoleGridView if Out-Gridview does not exist (typical Unix,Mac,...)
-$OutGridView = $true
-if (!(Get-Command -Name Out-GridView -ErrorAction SilentlyContinue)) {
-    if (Get-Command -Name Out-ConsoleGridView) {
-        $OutGridView = $false
-    }
-    else {
-        Write-Error "Script running on non-Desktop, Please install Module Microsoft.PowerShell.ConsoleGuiTools for CmdLet Out-ConsoleGridView!"
-        break
-    }
-}
-#endregion
-
-
-# German Umlauts have to be replaced and the table lists them with charvalues, as text format conversion happens too often
-# We have to replace umlauts as the Syno-API are not consistent in handling umlauts!
-# Additionally we are replacing some characters which will not work in some filesystems. If you find additional ones add them here!
-$CharacterReplaceTable = @{
-    '|'               = '_'
-    ':'               = '_'
-    '/'               = '_'
-    '?'               = '_'
-    '&'               = 'und'
-    'á'               = 'a'
-    '"'               = "_"
-    [string][char]252 = 'ue'
-    [string][char]228 = 'ae'
-    [string][char]246 = 'oe'
-    [string][char]223 = 'ss'
-}
-
-#titles with these keywords will excluded. If you want any of them, remove the lines or add if you find some annoying lines
-$ExcludeTitlesKeywords = @(
-    "Audiodeskription"
-    "Geb$([string][char]228)rdensprache"
-    "H$([string][char]246)rfassung"    
-)
-
+#Remove before Publish!
+$SynologyURI = "https://home.lambrecht.de:443" 
 
 #region Display Init
 #Section to define, which rows should be shown in which type of Gridview
@@ -107,12 +37,138 @@ $DisplayInformationsConsole = @(
 )
 #endregion
 
+#region Character Replace Table
+# German Umlauts have to be replaced and the table lists them with charvalues, as text format conversion happens too often
+# We have to replace umlauts as the Syno-API are not consistent in handling umlauts!
+# Additionally we are replacing some characters which will not work in some filesystems. If you find additional ones add them here!
+$CharacterReplaceTable = @{
+    '|'               = '_'
+    ':'               = '_'
+    '/'               = '_'
+    '?'               = '_'
+    '&'               = 'und'
+    'á'               = 'a'
+    '"'               = "_"
+    [string][char]252 = 'ue'
+    [string][char]228 = 'ae'
+    [string][char]246 = 'oe'
+    [string][char]223 = 'ss'
+}
+#endregion Character Replace Table
+
+#region Filter Airings with
+#titles with these keywords will excluded. If you want any of them, remove the lines or add if you find some annoying lines
+$ExcludeTitlesKeywords = @(
+    "Audiodeskription"
+    "Geb$([string][char]228)rdensprache"
+    "H$([string][char]246)rfassung"    
+)
+#endregion Filter Airings with
+
+#region Synology Errorcodes
+$SynoErrorCodes = @{
+    Tasks          = @{
+        400 = "File upload failed"
+        401 = "Max number of tasks reached"
+        402 = "Destination denied"
+        403 = "Destination does not exist"
+        404 = "Invalid task id"
+        405 = "Invalid task action"
+        406 = "No default destination"
+        407 = "Set destination failed"
+        408 = "File does not exist"
+    }
+    Authentication = @{
+        400 = "No such account or incorrect password"
+        401 = "Account disabled"
+        402 = "Permission denied"
+        403 = "2-step verification code required"
+        404 = "Failed to authenticate 2-step verification code"
+    }
+}
+#endregion Synology Errorcodes
+
 #endregion Global Settings
 
-# Translation of field-Settings in German:
-# channel = Sender, topic = Thema, title = Titel
+#region Out-ConsoleGridview Init
+#Use Out-ConsoleGridView if Out-Gridview does not exist (typical Unix,Mac,...)
+$OutGridView = $true
+if (!(Get-Command -Name Out-GridView -ErrorAction SilentlyContinue)) {
+    if (Get-Command -Name Out-ConsoleGridView) {
+        $OutGridView = $false
+    }
+    else {
+        Write-Error "Script running on non-Desktop, Please install Module Microsoft.PowerShell.ConsoleGuiTools for CmdLet Out-ConsoleGridView!"
+        break
+    }
+}
+#endregion Out-ConsoleGridview Init
+
+#region Initialization Part
+
+#region Password Initialization
+#Synology Username and Password. Dont use a user with 2FA. Its pretty wise to add a user with very limited rights (download etc.)
+#Please be aware that the "encryption" used on linux is NOT Secure. On Windows it uses DPAPI, on Linux its just a Bitewrapper
+$ScriptFileName = $MyInvocation.MyCommand.Name
+$ScriptFileNamePlain = [System.IO.Path]::GetFileNameWithoutExtension($ScriptFileName)
+if (Test-Path "$PSScriptRoot\$ScriptFileNamePlain.xml") {
+    $Credentials = import-clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
+    if ($Credentials.GetNetworkCredential().Password -eq "" -or $Credentials.GetNetworkCredential().Password -eq "please_ask_for_password") {
+        $Credentials = Get-Credential -UserName $Credentials.UserName -Message "Password is empty, so it will be asked on every use!"
+    }
+}
+else {
+    $title = "Save the password?"
+    $msg = "Do you want save the password to a file (No=Ask every start for the password) ?"
+    $options = '&Yes', '&No'
+    $default = 0  # 0=Yes, 1=No
+    $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
+    $Credentials = Get-Credential
+    #Interim solution as Linux PWSH cannot reimport clixml with an empty password. We will fill it with this password, so we know that it is intended to not save the password!
+    if ($response -eq 1) {
+        $TmpPassword = ConvertTo-SecureString -AsPlainText -Force "please_ask_for_password"
+        $SaveCredentials = new-object -typename System.Management.Automation.PSCredential -argumentlist ($Credentials.UserName, $TmpPassword)
+    }
+    else {
+        $SaveCredentials = $Credentials
+    }
+    $SaveCredentials | Export-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
+}
+
+$SynologyUserName = $Credentials.Username
+$SynologyPassword = $Credentials.GetNetworkCredential().Password
+#endregion Password Initialization
+
+#region Reload from Mediathek Query
+if ($LastMediathekSearch) {
+    if ((New-TimeSpan -Start $LastMediathekSearch -End (Get-date)).TotalMinutes -le $ForceQueryRerunMinutes) {
+        $title = "Rerun Mediathek Search?"
+        $DeltaTime=[Math]::Round((New-TimeSpan -Start $LastMediathekSearch -End (Get-Date)).TotalMinutes,2)
+        $msg = "Last Mediathek Search was $DeltaTime Minutes ago. Rerun?"
+        $options = '&Yes', '&No'
+        $default = 1  # 0=Yes, 1=No
+        $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
+        if ($response -eq 1) {
+            #No Rerun whished
+            $MediathekRerunQuery=$false
+        }
+        else {
+            #Rerun wished
+            $MediathekRerunQuery=$true
+        }
+    }
+}
+else {
+    #No Last Run available so Query has to run
+    $MediathekRerunQuery=$true
+}
+#endregion Reload from Mediathek Query
+
+#endregion Initialization Part
 
 #region Airings to search for
+# Translation of field-Settings in German:
+# channel = Sender, topic = Thema, title = Titel
 $MediathekDownload = @(
     @{ # Temporary Full Search
         Enabled        = $true 
@@ -148,39 +204,8 @@ $MediathekDownload = @(
 )
 #endregion Airings to search for
 
-
-
-#region Synology Errorcodes
-$SynoErrorCodes = @{
-    Tasks          = @{
-        400 = "File upload failed"
-        401 = "Max number of tasks reached"
-        402 = "Destination denied"
-        403 = "Destination does not exist"
-        404 = "Invalid task id"
-        405 = "Invalid task action"
-        406 = "No default destination"
-        407 = "Set destination failed"
-        408 = "File does not exist"
-    }
-    Authentication = @{
-        400 = "No such account or incorrect password"
-        401 = "Account disabled"
-        402 = "Permission denied"
-        403 = "2-step verification code required"
-        404 = "Failed to authenticate 2-step verification code"
-    }
-}
-#endregion Synology Errorcodes
-
 #region Mediathek-Queries
-if ($LastMediathekSearch) {
-    $DeltaTime = (New-TimeSpan -Start $LastMediathekSearch -End (Get-date)).TotalMinutes
-}
-else {
-    $DeltaTime = $SkipQueryMinutes + 1
-}
-if ($DeltaTime -gt $SkipQueryMinutes) {
+if ($MediathekRerunQuery) {
     $LastMediathekSearch = Get-Date
     $FullList = @()
 
@@ -255,16 +280,17 @@ else {
 }
 #endregion User-Presentation
 
-#region Now get the full lines for the titles
+#region Now get the full lines for the titles that are needed for the downloads. Primary Key is the Index
 $Auswahl = @()
 foreach ($Index in $AuswahlIndex) {
     $Auswahl += $FilteredList[$Index.Index]
 }
-#endregion
+#endregion Now get the full lines for the titles that are needed for the downloads. Primary Key is the Index
 
+#region Main Download Code
 #Only do something if the user has choosen at least one entry
 if ($Auswahl) {
-    #Now check all entries for Manual Rename or Autorename
+    #region Now check all entries for Manual Rename or Autorename
     $RenameJobs = @()
     foreach ($Einzelsendung in $Auswahl) {
         #Check if a Search entry requires manual filename setting
@@ -294,6 +320,7 @@ if ($Auswahl) {
             $RenameJobs += $Einzelsendung
         }
     }
+    #endregion Now check all entries for Manual Rename or Autorename
 
     #region Authenticate to the NAS
     $AuthArgs = @{
@@ -314,7 +341,7 @@ if ($Auswahl) {
     }
     #Remember SID for all future actions
     $SID = $Authentication.data.sid
-    #endregion
+    #endregion Authenticate to the NAS
     
     #region Get the current tasklist to eventually delete a task from same URI
     $TaskListArgs = @{
@@ -325,7 +352,7 @@ if ($Auswahl) {
         _sid       = $SID
     }
     $TaskList = Invoke-RestMethod -uri "$SynologyURI/webapi/DownloadStation/task.cgi" -Body $TaskListArgs
-    #endregion
+    #endregion Get the current tasklist to eventually delete a task from same URI
 
     #region Ask to delete all finished jobs
     $FinishedIds = ($TaskList.data.tasks | where-object { $_.status -eq "finished" }).id
@@ -352,7 +379,7 @@ if ($Auswahl) {
    
         }
     }
-    #endregion
+    #endregion Ask to delete all finished jobs
 
     #region Now start the Download-Jobs
     foreach ($Job in $Auswahl) {
@@ -407,9 +434,9 @@ if ($Auswahl) {
         #endregion Now check if the file already exist
 
     }
-    #endregion
+    #endregion Now start the Download-Jobs
 
-    #begin If rename is active, wait for the jobs that have a rename waiting
+    #region If rename is active, wait for the jobs that have a rename waiting
     if ($RenameJobs.Count -gt 0) {
         do {
             $JobsFinished = 0
@@ -457,7 +484,7 @@ if ($Auswahl) {
             }
         }
     }
-    #endregion
+    #endregion If rename is active, wait for the jobs that have a rename waiting
 
 
     #region Now logoff from NAS
@@ -470,5 +497,6 @@ if ($Auswahl) {
     $Logout = Invoke-RestMethod -Uri "$SynologyURI/webapi/auth.cgi" -Body $AuthArgs
     Write-Host "-----------------------------------------------------------------------------------------"
     Write-Host "Logout returned: $($Logout.success)"
-    #endregion
+    #endregion Now logoff from NAS
 }
+#endregion Main Download Code
