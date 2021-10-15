@@ -25,3 +25,8 @@ Currently find some information here:
 https://www.lambrecht.de/?p=155
 
 This script should be compatible with PS5.1 and PS7.x although it is usually tested on PS5.1.
+
+Version History:
+1.0
+- First Version
+
