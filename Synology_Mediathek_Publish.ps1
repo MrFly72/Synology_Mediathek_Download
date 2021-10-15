@@ -1,16 +1,63 @@
 #region Global Settings
+#Remove-Variable LastMediathekSearch
 $future = $true # Search for future airings ?
-$NumberOfDaysBack = 14 # Number of days to search back in Mediathekviewweb
+#$PSDefaultParameterValues.Remove("Invoke-RestMethod:Proxy")
+#$PSDefaultParameterValues.Clear()
+$NumberOfDaysBack = 1000 # Number of days to search back in Mediathekviewweb
 $MinimumSize = 100000 # Minimum Size of the MP4 file, trying to remove stupid sizes
 $MinimumLength = "00:15:00" # Minimum length of the Airing in HH:MM:SS
-$MaxReturnEntries = 40 #Maximum entries, that will be returned by Mediathekwebview
+$MaxReturnEntries = 100 #Maximum entries, that will be returned by Mediathekwebview
+$SkipQueryMinutes = 60 # Check fo LastRunTime and if it is less then this Minutes, dont ask the Mediathek again. Only Works if PS Session stays active. to reset, reload session
+$MaxFinishedBeforeDeleteQuestion = 5
 #Synology Username and Password. Dont use a user with 2FA. Its pretty wise to add a user with very limited rights (download etc.)
-$SynologyUserName = "Username"
-$SynologyPassword = "Password"
-# Replace with you URI, can be internal or external URI.
+#Please be aware that the "encryption" used on linux is NOT Secure. On Windows it uses DPAPI, on Linux its just a Bitewrapper
+$ScriptFileName=$MyInvocation.MyCommand.Name
+$ScriptFileNamePlain=[System.IO.Path]::GetFileNameWithoutExtension($ScriptFileName)
+if (Test-Path "$PSScriptRoot\$ScriptFileNamePlain.xml") {
+    $Credentials=import-clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
+    if ($Credentials.GetNetworkCredential().Password -eq "" -or $Credentials.GetNetworkCredential().Password -eq "please_ask_for_password") {
+        $Credentials = Get-Credential -UserName $Credentials.UserName -Message "Password is empty, so it will be asked on every use!"
+    }
+}
+else {
+    $title = "Save the password?"
+    $msg = "Do you want save the password to a file (No=Ask every start for the password) ?"
+    $options = '&Yes', '&No'
+    $default = 0  # 0=Yes, 1=No
+    $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
+    $Credentials = Get-Credential
+    #Interim solution as Linux PWSH cannot reimport clixml with an empty password. We will fill it with this password, so we know that it is intended to not save the password!
+    if ($response -eq 1) {
+        $TmpPassword =  ConvertTo-SecureString -AsPlainText -Force "please_ask_for_password"
+        $SaveCredentials = new-object -typename System.Management.Automation.PSCredential -argumentlist ($Credentials.UserName, $TmpPassword)
+    }
+    else {
+        $SaveCredentials = $Credentials
+    }
+    $SaveCredentials | Export-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
+}
+
+$SynologyUserName = $Credentials.Username
+$SynologyPassword = $Credentials.GetNetworkCredential().Password
+# Replace with your URI, can be internal or external URI.
 # Standard Ports: 5000 : HTTP, 5001 : HTTPS (strongly recommended!!!)
-# If you are using SSL make sure the SSL Cert matches! Future Version might have an option to ignore SSL-Cert
-$SynologyURI = "https://this.is.my.synology:5001" 
+# If you are using SSL make sure the SSL Cert matches!
+$SynologyURI="https://mysynology.home.net:5001" 
+
+#region Out-ConsoleGridview Init
+#Use Out-ConsoleGridView if Out-Gridview does not exist (typical Unix,Mac,...)
+$OutGridView = $true
+if (!(Get-Command -Name Out-GridView -ErrorAction SilentlyContinue)) {
+    if (Get-Command -Name Out-ConsoleGridView) {
+        $OutGridView = $false
+    }
+    else {
+        Write-Error "Script running on non-Desktop, Please install Module Microsoft.PowerShell.ConsoleGuiTools for CmdLet Out-ConsoleGridView!"
+        break
+    }
+}
+#endregion
+
 
 # German Umlauts have to be replaced and the table lists them with charvalues, as text format conversion happens too often
 # We have to replace umlauts as the Syno-API are not consistent in handling umlauts!
@@ -22,33 +69,43 @@ $CharacterReplaceTable = @{
     '?'               = '_'
     '&'               = 'und'
     'á'               = 'a'
+    '"'               = "_"
     [string][char]252 = 'ue'
     [string][char]228 = 'ae'
     [string][char]246 = 'oe'
     [string][char]223 = 'ss'
 }
-<#
-#Different form of building the Hashtable for the replacement, which allows to seperate Upper/lowercase, but also has the problem with umlauts be converted on text encodings
-$CharacterReplaceTable = New-Object system.collections.hashtable
-$CharacterReplaceTable.'|' = '_'
-$CharacterReplaceTable.':' = '_'
-$CharacterReplaceTable.'/' = '_'
-$CharacterReplaceTable.'?' = '_'
-$CharacterReplaceTable.'&' = 'und'
-$CharacterReplaceTable.'ü' = 'ue'
-$CharacterReplaceTable.'ä' = 'ae'
-$CharacterReplaceTable.'ö' = 'oe'
-$CharacterReplaceTable.'Ü' = 'Ue'
-$CharacterReplaceTable.'Ä' = 'Ae'
-$CharacterReplaceTable.'Ö' = 'Oe'
-$CharacterReplaceTable.'ß' = 'ss'
-#>
 
+#titles with these keywords will excluded. If you want any of them, remove the lines or add if you find some annoying lines
 $ExcludeTitlesKeywords = @(
     "Audiodeskription"
     "Geb$([string][char]228)rdensprache"
     "H$([string][char]246)rfassung"    
 )
+
+
+#region Display Init
+#Section to define, which rows should be shown in which type of Gridview
+$DisplayInformationsDesktop = @(
+    "Index" #Never remove Index!
+    "channel"
+    "topic"
+    "title"
+    "timestamp"
+    "duration"
+    "size"
+    "description"
+)
+$DisplayInformationsConsole = @(
+    "Index" #Never remove Index!
+    "channel"
+    "topic"
+    "title"
+    "timestamp"
+    "duration"
+    "size"
+)
+#endregion
 
 #endregion Global Settings
 
@@ -92,6 +149,7 @@ $MediathekDownload = @(
 #endregion Airings to search for
 
 
+
 #region Synology Errorcodes
 $SynoErrorCodes = @{
     Tasks          = @{
@@ -116,64 +174,93 @@ $SynoErrorCodes = @{
 #endregion Synology Errorcodes
 
 #region Mediathek-Queries
-
-$FullList = @()
-
-foreach ($MediathekEntry in $MediathekDownload) {
-    if ($Null -eq $MediathekEntry.Enabled -or $MediathekEntry.Enabled -eq $true) {
-        Write-Host "Mediathek search for: $($MediathekEntry.MediathekQuery.queries.query -join ',')"
-        #As PS Core is working slightly different with ConvertTo-Json we have to check for desktop or core here
-        if ($PSVersionTable.PSEdition -eq "Desktop") {
-            $QueryJSON = $MediathekEntry.MediathekQuery | ConvertTo-Json -Depth 20
-        }
-        else {
-            #Core supports a new escaping, which is needed for umlauts in core, but not in 5.1
-            $QueryJSON = $MediathekEntry.MediathekQuery | ConvertTo-Json -Depth 20 -EscapeHandling EscapeNonAscii
-        }
-        $Antwort = Invoke-RestMethod -Method Post -Uri "https://mediathekviewweb.de/api/query" -Body $QueryJSON -ContentType "text/plain"
-        $DownloadInfos = $MediathekEntry.DownloadInfos.Clone()
-        $DownloadInfos.DownloadStatus = "None"
-        $DownloadInfos.DownloadFileName = ""
-        $DownloadInfos.NewFileName = ""
-        $AntwortConverted = $Antwort.result.results | Select-Object Channel, topic, title, @{Label = "timestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.timestamp).ToLocalTime() } }, @{Label = "duration"; Expression = { [timespan]::FromSeconds($_.duration) } }, @{Label = "filmlisteTimestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.filmlisteTimestamp).ToLocalTime() } }, description, size, url_website, url_video, @{Label = "DownloadInfos"; Expression = { $DownloadInfos.Clone() } }
-        Write-Host "Mediathekquery returned: totalResults : $($Antwort.result.queryInfo.totalResults) Returned Results : $($Antwort.result.queryInfo.resultCount) Filmliste Timestamp:" (Get-Date "01/01/1970").ToLocalTime().AddSeconds($Antwort.result.queryInfo.filmlisteTimestamp)
-        if (!$AntwortConverted) {
-            continue
-        }
-        if ($AntwortConverted.Count -eq $MaxReturnEntries) {
-            Write-Host "Found $($AntwortConverted.Count) entries WARNING Max entries reached!!!" -ForegroundColor Red
-            if ((New-TimeSpan -Start $AntwortConverted[-1].timestamp -End (Get-Date)).TotalDays -gt $NumberOfDaysBack) {
-                Write-Host "But all is safe, as all elements with date limit are downloaded!" -ForegroundColor Green
-            }
-            else {
-                Write-Host "Could not get all elements inside of date limit!!!!" -ForegroundColor Red
-            }
-        }
-        $FullList += $AntwortConverted | where-object { (New-TimeSpan -Start $_.timestamp -End (Get-Date)).TotalDays -lt $NumberOfDaysBack }
-    }
-    else {
-        Write-Host "Mediathek search DISABLED for: $($MediathekEntry.MediathekQuery.queries.query -join ',')"
-    }
-}
-
-#Now filter the output by some criterias
-
-#Skip if Array with Keywords is empty
-if ($ExcludeTitlesKeywords.Count -gt 0) {
-    $FilteredList = $FullList | where-object { $_.title -notmatch ($ExcludeTitlesKeywords -join "|") }
+if ($LastMediathekSearch) {
+    $DeltaTime = (New-TimeSpan -Start $LastMediathekSearch -End (Get-date)).TotalMinutes
 }
 else {
-    $FilteredList = $FullList
+    $DeltaTime = $SkipQueryMinutes + 1
 }
-$FilteredList = $FilteredList | where-object { $_.size -gt $MinimumSize -and $_.duration -gt $MinimumLength } 
-$FilteredList = $FilteredList | Sort-Object -Property timestamp -Descending 
+if ($DeltaTime -gt $SkipQueryMinutes) {
+    $LastMediathekSearch = Get-Date
+    $FullList = @()
+
+    foreach ($MediathekEntry in $MediathekDownload) {
+        if ($Null -eq $MediathekEntry.Enabled -or $MediathekEntry.Enabled -eq $true) {
+            Write-Host "Mediathek search for: $($MediathekEntry.MediathekQuery.queries.query -join ',')"
+            #As PS Core is working slightly different with ConvertTo-Json we have to check for desktop or core here
+            if ($PSVersionTable.PSEdition -eq "Desktop") {
+                $QueryJSON = $MediathekEntry.MediathekQuery | ConvertTo-Json -Depth 20
+            }
+            else {
+                #Core supports a new escaping, which is needed for umlauts in core, but not in 5.1
+                $QueryJSON = $MediathekEntry.MediathekQuery | ConvertTo-Json -Depth 20 -EscapeHandling EscapeNonAscii
+            }
+            $Antwort = Invoke-RestMethod -Method Post -Uri "https://mediathekviewweb.de/api/query" -Body $QueryJSON -ContentType "text/plain"
+            $DownloadInfos = $MediathekEntry.DownloadInfos.Clone()
+            $DownloadInfos.DownloadStatus = "None"
+            $DownloadInfos.DownloadFileName = ""
+            $DownloadInfos.NewFileName = ""
+            $AntwortConverted = @($Antwort.result.results | Select-Object Channel, topic, title, @{Label = "timestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.timestamp).ToLocalTime() } }, @{Label = "duration"; Expression = { [timespan]::FromSeconds($_.duration) } }, @{Label = "filmlisteTimestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.filmlisteTimestamp).ToLocalTime() } }, size, description, url_website, url_video, @{Label = "DownloadInfos"; Expression = { $DownloadInfos.Clone() } })
+            Write-Host "Mediathekquery returned: totalResults : $($Antwort.result.queryInfo.totalResults) Returned Results : $($Antwort.result.queryInfo.resultCount) Filmliste Timestamp:" (Get-Date "01/01/1970").ToLocalTime().AddSeconds($Antwort.result.queryInfo.filmlisteTimestamp)
+            if (!$AntwortConverted) {
+                continue
+            }
+            if ($AntwortConverted.Count -eq $MaxReturnEntries) {
+                Write-Host "Found $($AntwortConverted.Count) entries WARNING Max entries reached!!!" -ForegroundColor Red
+                if ((New-TimeSpan -Start $AntwortConverted[-1].timestamp -End (Get-Date)).TotalDays -gt $NumberOfDaysBack) {
+                    Write-Host "But all is safe, as all elements with date limit are downloaded!" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "Could not get all elements inside of date limit!!!!" -ForegroundColor Red
+                }
+            }
+            $FullList += $AntwortConverted | where-object { (New-TimeSpan -Start $_.timestamp -End (Get-Date)).TotalDays -lt $NumberOfDaysBack }
+        }
+        else {
+            Write-Host "Mediathek search DISABLED for: $($MediathekEntry.MediathekQuery.queries.query -join ',')"
+        }
+    }
+
+    #Now filter the output by some criterias
+
+    #Skip if Array with Keywords is empty
+    if ($ExcludeTitlesKeywords.Count -gt 0) {
+        $FilteredList = $FullList | where-object { $_.title -notmatch ($ExcludeTitlesKeywords -join "|") }
+    }
+    else {
+        $FilteredList = $FullList
+    }
+    $FilteredList = $FilteredList | where-object { $_.size -gt $MinimumSize -and $_.duration -gt $MinimumLength } 
+    $FilteredList = $FilteredList | Sort-Object -Property timestamp -Descending 
+    #Will now put an Index in every entry to make it possible to show less elements
+    $Zaehler = 0
+    foreach ($Entry in $FilteredList) {
+        $Entry | Add-Member -MemberType NoteProperty -Name "Index" -Value $Zaehler
+        $Zaehler++
+    }
+}
+else {
+    Write-Host "Skipping Query as last query was Less then $SkipQueryMinutes (Last Query: $($LastMediathekSearch))"
+}
 #endregion Mediathek-Queries
 
 #region User-Presentation
 Write-Host "Found Total: $($FullList.Count) Filtered and shown: $($FilteredList.Count)"
 Write-Host "-----------------------------------------------------------------------------------------"
-$Auswahl = $FilteredList | Out-GridView -Title "Bitte Sendungen zum Download auswaehlen" -PassThru
+if ($OutGridView) {
+    $AuswahlIndex = $FilteredList | Select-Object $DisplayInformationsDesktop | Out-GridView -Title "Bitte Sendungen zum Download auswaehlen" -PassThru
+}
+else {
+    $AuswahlIndex = $FilteredList | select-object $DisplayInformationsConsole | Out-ConsoleGridView -Title "Bitte Sendungen zum Download auswaehlen" -OutputMode Multiple
+}
 #endregion User-Presentation
+
+#region Now get the full lines for the titles
+$Auswahl = @()
+foreach ($Index in $AuswahlIndex) {
+    $Auswahl += $FilteredList[$Index.Index]
+}
+#endregion
 
 #Only do something if the user has choosen at least one entry
 if ($Auswahl) {
@@ -238,6 +325,33 @@ if ($Auswahl) {
         _sid       = $SID
     }
     $TaskList = Invoke-RestMethod -uri "$SynologyURI/webapi/DownloadStation/task.cgi" -Body $TaskListArgs
+    #endregion
+
+    #region Ask to delete all finished jobs
+    $FinishedIds = ($TaskList.data.tasks | where-object { $_.status -eq "finished" }).id
+    $NonFinishedIds = ($TaskList.data.tasks | where-object { $_.status -ne "finished" }).id
+    Write-Host "Found $($FinishedIds.Count) Finished Tasks and $($NonFinishedIds.Count) Not-Finished Tasks (Error,Downloading or any other state), which will not be handled!" -ForegroundColor Red
+    if ($FinishedIds.Count -ge $MaxFinishedBeforeDeleteQuestion) {
+        $title = "Remove old Download-Jobs"
+        $msg = "Do you want delete $($FinishedIds.Count) finished jobs ?"
+        $options = '&Yes', '&No'
+        $default = 0  # 0=Yes, 1=No
+        $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
+        if ($response -eq 0) {
+            $JobIds = $FinishedIds -join ','
+            $DelTaskArguments = @{
+                api            = "SYNO.DownloadStation.Task"
+                version        = "1"
+                method         = "delete"
+                id             = $JobIds
+                force_complete = $false
+                _sid           = $SID
+            }
+            $TaskDelete = Invoke-RestMethod -Method Post -uri "$SynologyURI/webapi/DownloadStation/task.cgi" -Body $DelTaskArguments
+            Write-Host "Deleted all old tasks that are finished with the following State: $($TaskDelete.success)" -ForegroundColor Red
+   
+        }
+    }
     #endregion
 
     #region Now start the Download-Jobs
@@ -358,4 +472,3 @@ if ($Auswahl) {
     Write-Host "Logout returned: $($Logout.success)"
     #endregion
 }
-
