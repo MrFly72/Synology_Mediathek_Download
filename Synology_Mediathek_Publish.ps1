@@ -1,18 +1,16 @@
 #region Global Settings
 $future = $true # Search for future airings ?
-$NumberOfDaysBack = 1000 # Number of days to search back in Mediathekviewweb
+$NumberOfDaysBack = 365 # Number of days to search back in Mediathekviewweb
 $MinimumSize = 100000 # Minimum Size of the MP4 file, trying to remove stupid sizes
 $MinimumLength = "00:15:00" # Minimum length of the Airing in HH:MM:SS
 $MaxReturnEntries = 100 #Maximum entries, that will be returned by Mediathekwebview
 $ForceQueryRerunMinutes = 60 # Check fo LastRunTime and if it is less then this Minutes, dont ask the Mediathek again. Only Works if PS Session stays active.
 $MaxFinishedBeforeDeleteQuestion = 5
+$SaveMediathekResultToFile = $true
 # Replace with your URI, can be internal or external URI.
 # Standard Ports: 5000 : HTTP, 5001 : HTTPS (strongly recommended!!!)
 # If you are using SSL make sure the SSL Cert matches!
 $SynologyURI = "https://mysynology.home.net:5001" 
-
-#Remove before Publish!
-$SynologyURI = "https://home.lambrecht.de:443" 
 
 #region Display Init
 #Section to define, which rows should be shown in which type of Gridview
@@ -105,62 +103,97 @@ if (!(Get-Command -Name Out-GridView -ErrorAction SilentlyContinue)) {
 #endregion Out-ConsoleGridview Init
 
 #region Initialization Part
-
-#region Password Initialization
-#Synology Username and Password. Dont use a user with 2FA. Its pretty wise to add a user with very limited rights (download etc.)
-#Please be aware that the "encryption" used on linux is NOT Secure. On Windows it uses DPAPI, on Linux its just a Bitewrapper
 $ScriptFileName = $MyInvocation.MyCommand.Name
 $ScriptFileNamePlain = [System.IO.Path]::GetFileNameWithoutExtension($ScriptFileName)
+
+#region Script State initialization
 if (Test-Path "$PSScriptRoot\$ScriptFileNamePlain.xml") {
-    $Credentials = import-clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
-    if ($Credentials.GetNetworkCredential().Password -eq "" -or $Credentials.GetNetworkCredential().Password -eq "please_ask_for_password") {
-        $Credentials = Get-Credential -UserName $Credentials.UserName -Message "Password is empty, so it will be asked on every use!"
+    $ScriptState = Import-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
+    if ($ScriptState.Credentials.GetNetworkCredential().Password -eq "" -or $ScriptState.Credentials.GetNetworkCredential().Password -eq "please_ask_for_password") {
+        $Credentials = Get-Credential -UserName $Credentials.UserName -Title "Password not saved!" -Message "Please provide the Synology Password for this session!"
     }
+    else {
+        $Credentials = $ScriptState.Credentials
+    }
+    #$LastMediathekSearch = $ScriptState.LastMediathekSearch
+    $ScriptState.LastMediathekSearch = Get-Date
+    $ScriptState | Export-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml" -Force -Encoding utf8
 }
 else {
+    #Init the state-file
+    $ScriptState = @{
+        #LastMediathekSearch = Get-Date
+    }
     $title = "Save the password?"
     $msg = "Do you want save the password to a file (No=Ask every start for the password) ?"
     $options = '&Yes', '&No'
     $default = 0  # 0=Yes, 1=No
     $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
-    $Credentials = Get-Credential
     #Interim solution as Linux PWSH cannot reimport clixml with an empty password. We will fill it with this password, so we know that it is intended to not save the password!
     if ($response -eq 1) {
+        $Credentials = Get-Credential -Title "Synology Credentials" -Message "Please provide the credentials for the Synology! They will not be saved to file!"
         $TmpPassword = ConvertTo-SecureString -AsPlainText -Force "please_ask_for_password"
         $SaveCredentials = new-object -typename System.Management.Automation.PSCredential -argumentlist ($Credentials.UserName, $TmpPassword)
     }
     else {
+        $Credentials = Get-Credential -Title "Synology Credentials" -Message "Please provide the credentials for the Synology! Password will be saved!"
         $SaveCredentials = $Credentials
     }
-    $SaveCredentials | Export-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml"
+    [System.Management.Automation.PSCredential]$ScriptState.Credentials = $SaveCredentials
+    $ScriptState | Export-Clixml "$PSScriptRoot\$ScriptFileNamePlain.xml" -Force -Encoding utf8
+    #$LastMediathekSearch = $ScriptState.LastMediathekSearch.AddMinutes(0 - $ForceQueryRerunMinutes - 1) #Force Run as we init
 }
+#Take Last Query from Filetime of the cachefile
+$FileInfo=Get-Item -Path "$PSScriptRoot\$ScriptFileNamePlain-QueryResult.xml" -ErrorAction SilentlyContinue
+if ($FileInfo) {
+    $LastMediathekSearch=$FileInfo.LastWriteTimeUtc
+}
+else {
+    $LastMediathekSearch=(Get-Date).AddMinutes(0 - $ForceQueryRerunMinutes - 1).ToUniversalTime()
+}
+#endregion Script State initialization
 
+
+#region Password Initialization
 $SynologyUserName = $Credentials.Username
 $SynologyPassword = $Credentials.GetNetworkCredential().Password
 #endregion Password Initialization
 
 #region Reload from Mediathek Query
 if ($LastMediathekSearch) {
-    if ((New-TimeSpan -Start $LastMediathekSearch -End (Get-date)).TotalMinutes -le $ForceQueryRerunMinutes) {
+    if ((New-TimeSpan -Start $LastMediathekSearch -End (Get-date).ToUniversalTime()).TotalMinutes -le $ForceQueryRerunMinutes -and $SaveMediathekResultToFile) {
         $title = "Rerun Mediathek Search?"
-        $DeltaTime=[Math]::Round((New-TimeSpan -Start $LastMediathekSearch -End (Get-Date)).TotalMinutes,2)
+        $DeltaTime = [Math]::Round((New-TimeSpan -Start $LastMediathekSearch -End (Get-Date).ToUniversalTime()).TotalMinutes, 2)
         $msg = "Last Mediathek Search was $DeltaTime Minutes ago. Rerun?"
         $options = '&Yes', '&No'
         $default = 1  # 0=Yes, 1=No
         $response = $Host.UI.PromptForChoice($title, $msg, $options, $default)
         if ($response -eq 1) {
             #No Rerun whished
-            $MediathekRerunQuery=$false
+            $MediathekRerunQuery = $false
+            if ((Test-Path "$PSScriptRoot\$ScriptFileNamePlain-QueryResult.xml") -and $SaveMediathekResultToFile) {
+                Write-Host "Will reimport the last Query Results!" -ForegroundColor Green
+                $FilteredList = Import-Clixml -Path "$PSScriptRoot\$ScriptFileNamePlain-QueryResult.xml"
+            }
+            else {
+                Write-Host "Have to run Query as there is no saved data!" -ForegroundColor Red
+                $MediathekRerunQuery = $true
+            }
         }
         else {
             #Rerun wished
-            $MediathekRerunQuery=$true
+            Write-Host "Info: Rerunning the query by request!" -ForegroundColor Yellow
+            $MediathekRerunQuery = $true
         }
+    }
+    else {
+        Write-Host "Info: Running query, as cache is to old or missing!" -ForegroundColor Yellow
+        $MediathekRerunQuery = $true
     }
 }
 else {
     #No Last Run available so Query has to run
-    $MediathekRerunQuery=$true
+    $MediathekRerunQuery = $true
 }
 #endregion Reload from Mediathek Query
 
@@ -226,17 +259,17 @@ if ($MediathekRerunQuery) {
             $DownloadInfos.DownloadFileName = ""
             $DownloadInfos.NewFileName = ""
             $AntwortConverted = @($Antwort.result.results | Select-Object Channel, topic, title, @{Label = "timestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.timestamp).ToLocalTime() } }, @{Label = "duration"; Expression = { [timespan]::FromSeconds($_.duration) } }, @{Label = "filmlisteTimestamp"; Expression = { ([datetime] '1970-01-01Z').ToUniversalTime().AddSeconds($_.filmlisteTimestamp).ToLocalTime() } }, size, description, url_website, url_video, @{Label = "DownloadInfos"; Expression = { $DownloadInfos.Clone() } })
-            Write-Host "Mediathekquery returned: totalResults : $($Antwort.result.queryInfo.totalResults) Returned Results : $($Antwort.result.queryInfo.resultCount) Filmliste Timestamp:" (Get-Date "01/01/1970").ToLocalTime().AddSeconds($Antwort.result.queryInfo.filmlisteTimestamp)
+            Write-Host "Mediathekquery: totalResults: $($Antwort.result.queryInfo.totalResults) Returned: $($Antwort.result.queryInfo.resultCount) Filmliste Timestamp: $((Get-Date '01/01/1970').ToLocalTime().AddSeconds($Antwort.result.queryInfo.filmlisteTimestamp)) Oldest: $($AntwortConverted[-1].timestamp)"
             if (!$AntwortConverted) {
                 continue
             }
-            if ($AntwortConverted.Count -eq $MaxReturnEntries) {
-                Write-Host "Found $($AntwortConverted.Count) entries WARNING Max entries reached!!!" -ForegroundColor Red
+            if ($AntwortConverted.Count -eq $MediathekEntry.MediathekQuery.size) { #$MaxReturnEntries
+                Write-Host "Found $($AntwortConverted.Count) entries WARNING Max entries reached!!!" -ForegroundColor Yellow
                 if ((New-TimeSpan -Start $AntwortConverted[-1].timestamp -End (Get-Date)).TotalDays -gt $NumberOfDaysBack) {
                     Write-Host "But all is safe, as all elements with date limit are downloaded!" -ForegroundColor Green
                 }
                 else {
-                    Write-Host "Could not get all elements inside of date limit!!!!" -ForegroundColor Red
+                    Write-Host "Could not get all elements inside of date limit!!!! Oldest entry is:$($AntwortConverted[-1].timestamp)" -ForegroundColor Red
                 }
             }
             $FullList += $AntwortConverted | where-object { (New-TimeSpan -Start $_.timestamp -End (Get-Date)).TotalDays -lt $NumberOfDaysBack }
@@ -267,6 +300,7 @@ if ($MediathekRerunQuery) {
 else {
     Write-Host "Skipping Query as last query was Less then $SkipQueryMinutes (Last Query: $($LastMediathekSearch))"
 }
+$FilteredList | Export-Clixml -Path "$PSScriptRoot\$ScriptFileNamePlain-QueryResult.xml" -Force -Encoding utf8
 #endregion Mediathek-Queries
 
 #region User-Presentation

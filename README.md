@@ -28,6 +28,11 @@ This script should be compatible with PS5.1 and PS7.x although it is usually tes
 
 Version History:
 
+Version 1.3
+- Cache of Mediathek will now be exported to file for reuse on next start
+- LastRun will be taken from file date of the cache
+- Manual replacing the MaxEntries value can now be handled, so you can have a non-standard query with more results.
+
 Version 1.2
 - Added functionality to ask the user if the last query was below $ForceQueryRerunMinutes if a query should be rerun anyhow
 
