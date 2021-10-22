@@ -187,7 +187,7 @@ if ($LastMediathekSearch) {
         }
     }
     else {
-        Write-Host "Info: Running query, as cache is to old or missing!" -ForegroundColor Yellow
+        Write-Host "Info: Running query, as cache is too old or missing!" -ForegroundColor Yellow
         $MediathekRerunQuery = $true
     }
 }
