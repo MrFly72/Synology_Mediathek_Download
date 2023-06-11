@@ -28,6 +28,29 @@ This script should be compatible with PS5.1 and PS7.x although it is usually tes
 
 Version History:
 
+Version 1.8
+- Added option to force HD search 
+- Added Rest-API Try/Catch to repeat if NAS is not responding (typically when overloaded CPU)
+- Added value to max the number of topic characters
+- Added some more errormessages
+
+Version 1.7
+- Added wakup on LAN and waiting on the NAS to come up
+
+Version 1.6
+- Added Timed Prompts, that will default to an answer after defined time
+- Adds Tagging feature, which allows not to query all entries, but query for eg. a genre, or a subset defined by other term.
+
+Version 1.5
+- Added Option to filter out by title parts
+- Added feature for shortened topic (especially usefull for linux systems, because Out-ConsoleGridView has no possibility to change column width)
+- Added support for query of possible API from any version of DSM (Synology) to supports different API-Paths. Should make it compatible to 7.0
+
+Version 1.4
+- Changed Value MinimumLength from HH:MM:SS to Number of Seconds to use the server-side filtering of Mediathekviewweb
+- Added check on Script-Change. if the Script was changed, the Search will be enforced
+- Destination Folder will now be checked. If it does not exist it will be created
+
 Version 1.3
 - Cache of Mediathek will now be exported to file for reuse on next start
 - LastRun will be taken from file date of the cache
